@@ -40,7 +40,39 @@ detect_os () {
 
 	OS=`cat /etc/os-release | egrep '^ID=' | cut -d= -f2`
 	print_success "The local OS is a flavor of '$OS'."
+}
 
+
+detect_ec2() {
+	IsEC2="N"
+
+    # This first, simple check will work for many older instance types.
+    if [ -f /sys/hypervisor/uuid ]; then
+    # File should be readable by non-root users.
+            if [ `head -c 3 /sys/hypervisor/uuid` == "ec2" ]; then
+                    IsEC2="Y"
+            fi
+
+    # This check will work on newer m5/c5 instances, but only if you have root!
+    elif [ -r /sys/devices/virtual/dmi/id/product_uuid ]; then
+    # If the file exists AND is readable by us, we can rely on it.
+            if [ `head -c 3 /sys/devices/virtual/dmi/id/product_uuid` == "EC2" ]; then
+                    IsEC2="Y"
+            fi
+    else
+            # Fallback check of http://169.254.169.254/. If we wanted to be REALLY
+            # authoritative, we could follow Amazon's suggestions for cryptographically
+            # verifying their signature, see here:
+            # https://docs.aws.amazon.com/AWSEC2/latest/UserGuide/instance-identity-documents.html
+            # but this is almost certainly overkill for this purpose (and the above
+            # checks of "EC2" prefixes have a higher false positive potential, anyway).
+            if $(curl -s -m 5 http://169.254.169.254/latest/dynamic/instance-identity/document | grep -q availabilityZone) ; then
+                    IsEC2="Y"
+            fi
+    fi
+}
+detect_vps () {
+	detect_ec2
 }
 
 compile_query () {
@@ -56,8 +88,8 @@ compile_query () {
 			#
 			time_out=30
 			query1="Install the latest stable Lynx release? (faster build time) (Y/n):"
-			query2="Do you want ssh access enabled (more secure)? (y/N):" 
-			query3="Do you want to sync with the bootstrap file (less network intensive)? (Y/n):" 
+			query2="Do you want ssh access enabled (more secure)? (y/N):"
+			query3="Do you want to sync with the bootstrap file (less network intensive)? (Y/n):"
 			query4="Do you want the miners to run (supports the Lynx network)? (Y/n):"
 
 			#
@@ -117,12 +149,18 @@ compile_query () {
 		fi
 
 	else
-
 		compile_lynx=Y
-		enable_ssh=N
 		latest_bs=N
 		enable_mining=Y
+#		enable_ssh=$IsEC2
 
+		# Do we want to provide other configurations for EC2 or just use the defaults
+		# with SSH enabled? If so, we can ditch the check below and use the line above
+		if [$IsEC2 = "Y" ]; then
+			enable_ssh=Y
+		else
+			enable_ssh=N
+		fi
 	fi
 
 }
@@ -150,7 +188,7 @@ update_os () {
 
 		sed -i 's/CONF_SWAPSIZE=100/CONF_SWAPSIZE=1024/' /etc/dphys-swapfile
 		print_success "Swap was increased to 1GB."
-		
+
 		apt-get update -y
 		apt-get upgrade -y
 	fi
@@ -288,7 +326,7 @@ install_lynx () {
 		print_success "The latest stable release of Lynx is being installed now."
 
 		wget http://cdn.getlynx.io/lynxd-1.0.deb
-		dpkg -i lynxd-1.0.deb 
+		dpkg -i lynxd-1.0.deb
 
 	fi
 
@@ -400,9 +438,9 @@ set_miner () {
 	if [ \"\$IsMiner\" = \"Y\" ]; then
 		if ! pgrep -x \"cpuminer\" > /dev/null; then
 
-			# Randomly select a pool number from 1-6. 
+			# Randomly select a pool number from 1-6.
 			# Random selection occurs after each reboot, when this script is run.
-			# Add or remove pools to customize. 
+			# Add or remove pools to customize.
 			# Be sure to increase the number 5 to the new total.
 			minernmb=\"\$(shuf -i 1-6 -n1)\"
 
@@ -589,6 +627,7 @@ else
 	print_error "Starting installation of LynxCI."
 
 	detect_os
+	detect_vps
 	compile_query
 	update_os
 	set_network
